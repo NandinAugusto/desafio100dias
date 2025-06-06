@@ -73,24 +73,27 @@ def criar_tabela_jobs_ai(db_host, db_password, db_port, db_user, db_name):
         cursor = conn_dia1.cursor()
 
         create_table_query = """
-        CREATE TABLE IF NOT EXISTS jobs_ai (
-            job_id SERIAL PRIMARY KEY,
-            job_title VARCHAR(255),
-            company VARCHAR(100),
-            location VARCHAR(100),
-            salary DECIMAL(15, 2),
-            description TEXT,
-            requirements TEXT,
-            skills TEXT,Nova coluna
-            experience INT, 
-            job_type VARCHAR(50), 
-            industry VARCHAR(100), 
-            date_posted DATE, 
-            job_board VARCHAR(100),
-            remote_option BOOLEAN,
-            company_size VARCHAR(50),
-            company_type VARCHAR(100)
-        );
+CREATE TABLE IF NOT EXISTS jobs_ai (
+    job_id SERIAL PRIMARY KEY,
+    job_title VARCHAR(255),
+    salary_usd DECIMAL(15, 2),
+    salary_currency VARCHAR(10),
+    experience_level VARCHAR(50),
+    employment_type VARCHAR(50),
+    company_location VARCHAR(100),
+    company_size VARCHAR(50),
+    employee_residence VARCHAR(100),
+    remote_ratio INT,
+    required_skills TEXT,
+    education_required VARCHAR(100),
+    years_experience INT,
+    industry VARCHAR(100),
+    posting_date DATE,
+    application_deadline DATE,
+    job_description_length INT,
+    benefits_score DECIMAL(5, 2),
+    company_name VARCHAR(150)
+);
         """
         cursor.execute(create_table_query)
         print(f"Etapa 6.1 - Tabela 'jobs_ai' criada ou já existe no banco de dados '{db_name}'.")
