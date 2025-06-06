@@ -78,18 +78,18 @@ def criar_tabela_jobs_ai(db_host, db_password, db_port, db_user, db_name):
             job_title VARCHAR(255),
             company VARCHAR(100),
             location VARCHAR(100),
-            salary DECIMAL(15, 2), -- Alterado para DECIMAL(15,2)
+            salary DECIMAL(15, 2),
             description TEXT,
             requirements TEXT,
-            skills TEXT, -- Nova coluna
-            experience INT, -- Alterado para INT (assumindo 'Year_Experience' ou 'Experience')
-            job_type VARCHAR(50), -- Nova coluna
-            industry VARCHAR(100), -- Nova coluna
-            date_posted DATE, -- Nova coluna
-            job_board VARCHAR(100), -- Nova coluna
-            remote_option BOOLEAN, -- Nova coluna
-            company_size VARCHAR(50), -- Nova coluna
-            company_type VARCHAR(100) -- Nova coluna
+            skills TEXT,Nova coluna
+            experience INT, 
+            job_type VARCHAR(50), 
+            industry VARCHAR(100), 
+            date_posted DATE, 
+            job_board VARCHAR(100),
+            remote_option BOOLEAN,
+            company_size VARCHAR(50),
+            company_type VARCHAR(100)
         );
         """
         cursor.execute(create_table_query)
