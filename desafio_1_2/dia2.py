@@ -1,182 +1,357 @@
+
 import pandas as pd
 from sqlalchemy import create_engine, text
 import psycopg2
 import os
-import datetime
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Dict, Any
+import sys
 
-try:
-    from connection import (
-        DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, DB_PORT
+def configurar_logging(nivel_log: str = "INFO", arquivo_log: Optional[str] = None) -> logging.Logger:
+    logger = logging.getLogger('ETL_Pipeline')
+    logger.setLevel(getattr(logging, nivel_log.upper()))
+    
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    formatter = logging.Formatter(
+        '[%(asctime)s] [%(levelname)s] [ETL] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
     )
-    BD_HOST = DB_HOST
-    BD_NOME = DB_NAME
-    BD_USUARIO = DB_USER
-    BD_SENHA = DB_PASSWORD
-    BD_PORTA = DB_PORT
     
-except ImportError as e:
-    print(f"ERRO CRÍTICO: Não foi possível importar as credenciais de 'connection.py'.")
-    print(f"Verifique se o caminho da importação está correto e se as pastas são pacotes Python (com __init__.py).")
-    print(f"Erro: {e}")
-    BD_HOST = "localhost"
-    BD_NOME = "postgres"
-    BD_USUARIO = "postgres"
-    BD_SENHA = "123"
-    BD_PORTA = "5432"
-
-NUMERO_ETAPA = 0
-
-def registrar_mensagem(mensagem, nivel="INFO"):
-    global NUMERO_ETAPA
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if nivel == "INFO" or nivel == "SUCCESS" or nivel == "INICIO" or nivel == "FIM":
-        NUMERO_ETAPA += 1
-        print(f"[{timestamp}] [{nivel}] [ETAPA {NUMERO_ETAPA:.1f}] {mensagem}")
-    elif nivel == "ERRO":
-        print(f"[{timestamp}] [{nivel}] [ERRO {NUMERO_ETAPA:.1f}] {mensagem}")
-    elif nivel == "AVISO":
-        print(f"[{timestamp}] [{nivel}] [AVISO {NUMERO_ETAPA:.1f}] {mensagem}")
-    elif nivel.startswith("SUB-ETAPA"):
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    if arquivo_log:
         try:
-            sub_etapa_val = float(nivel.split(" ")[-1])
-            print(f"[{timestamp}] [INFO] [ETAPA {NUMERO_ETAPA}.{sub_etapa_val:.1f}] {mensagem}")
-        except ValueError:
-            print(f"[{timestamp}] [INFO] [ETAPA {NUMERO_ETAPA:.1f}] {mensagem}")
-    else:
-        print(f"[{timestamp}] [{nivel}] {mensagem}")
-
-CAMINHO_ARQUIVO_CSV = '../desafio100dias/arquivos_diversos/ai_job_dataset.csv'
-NOME_TABELA = 'ai_jobs'
-
-def conectar_bd_alchemy():
-    registrar_mensagem("Tentando conectar ao banco de dados PostgreSQL via SQLAlchemy...", nivel="INFO")
-    try:
-        string_conexao_engine = f'postgresql+psycopg2://{BD_USUARIO}:{BD_SENHA}@{BD_HOST}:{BD_PORTA}/{BD_NOME}'
-        engine = create_engine(string_conexao_engine)
-        with engine.connect() as conexao_teste:
-            conexao_teste.execute(text("SELECT 1"))
-        registrar_mensagem("Conexão com o banco de dados PostgreSQL estabelecida com sucesso.", nivel="SUCCESS")
-        return engine
-    except Exception as e:
-        registrar_mensagem(f"Falha ao conectar ao banco de dados via SQLAlchemy. Verifique suas credenciais e a disponibilidade do DB: {e}", nivel="ERRO")
-        return None
-
-def extrair_dados(caminho_csv):
-    registrar_mensagem(f"Iniciando a extração de dados do arquivo CSV: {caminho_csv}", nivel="INFO")
-    try:
-        df = pd.read_csv(caminho_csv)
-        registrar_mensagem(f"Dados extraídos com sucesso. {df.shape[0]} linhas, {df.shape[1]} colunas.", nivel="SUCCESS")
-        return df
-    except FileNotFoundError:
-        registrar_mensagem(f"O arquivo CSV '{caminho_csv}' não foi encontrado. Verifique o caminho.", nivel="ERRO")
-        return None
-    except Exception as e:
-        registrar_mensagem(f"Falha ao extrair dados do CSV: {e}", nivel="ERRO")
-        return None
-
-def transformar_dados(df):
-    if df is None:
-        registrar_mensagem("DataFrame de entrada é nulo. Nenhuma transformação será realizada.", nivel="AVISO")
-        return None
-
-    registrar_mensagem("Iniciando a Transformação de Dados.", nivel="INFO")
-
-    registrar_mensagem("Tratamento de valores nulos.", nivel="SUB-ETAPA 1.1")
-    contagem_nulos_inicial = df.isnull().sum()
-    registrar_mensagem(f"Valores nulos antes do tratamento:\n{contagem_nulos_inicial[contagem_nulos_inicial > 0]}", nivel="INFO")
-
-    if 'salary_in_usd' in df.columns:
-        registrar_mensagem("Preenchendo valores nulos em 'salary_in_usd' com a mediana.", nivel="SUB-ETAPA 1.2")
-        df['salary_in_usd'] = pd.to_numeric(df['salary_in_usd'], errors='coerce')
-        mediana_salario = df['salary_in_usd'].median()
-        if pd.isna(mediana_salario):
-            registrar_mensagem("Mediana de 'salary_in_usd' é NaN (coluna vazia ou não numérica). Não preenchido.", nivel="AVISO")
-        else:
-            df['salary_in_usd'].fillna(mediana_salario, inplace=True)
-            registrar_mensagem(f"Valores nulos em 'salary_in_usd' preenchidos com a mediana ({mediana_salario}).", nivel="INFO")
-
-    colunas_categoricas_para_preencher = ['employment_type', 'company_location', 'job_title', 'experience_level', 'company_size', 'company_residence', 'work_setting']
-    for col in colunas_categoricas_para_preencher:
-        if col in df.columns:
-            if df[col].isnull().any():
-                registrar_mensagem(f"Preenchendo valores nulos na coluna categórica '{col}' com a moda.", nivel="SUB-ETAPA 1.3")
-                try:
-                    valor_moda = df[col].mode()[0]
-                    df[col].fillna(valor_moda, inplace=True)
-                    registrar_mensagem(f"Valores nulos em '{col}' preenchidos com a moda ('{valor_moda}').", nivel="INFO")
-                except IndexError:
-                    registrar_mensagem(f"Coluna '{col}' não possui moda válida ou está vazia. Não preenchido.", nivel="AVISO")
-
-    linhas_iniciais_antes_dropna = df.shape[0]
-    registrar_mensagem(f"Verificando e removendo linhas com NaNs restantes (antes: {linhas_iniciais_antes_dropna} linhas).", nivel="SUB-ETAPA 1.4")
-    df.dropna(inplace=True)
-    linhas_apos_dropna = df.shape[0]
-    if linhas_iniciais_antes_dropna > linhas_apos_dropna:
-        registrar_mensagem(f"Removidas {linhas_iniciais_antes_dropna - linhas_apos_dropna} linhas com valores nulos restantes.", nivel="SUCCESS")
-    else:
-        registrar_mensagem("Nenhuma linha removida devido a valores nulos restantes após preenchimento.", nivel="INFO")
-
-    contagem_nulos_final = df.isnull().sum()
-    if contagem_nulos_final.sum() == 0:
-        registrar_mensagem("Todos os valores nulos foram tratados.", nivel="SUCCESS")
-    else:
-        registrar_mensagem(f"Ainda existem valores nulos após o tratamento:\n{contagem_nulos_final[contagem_nulos_final > 0]}", nivel="AVISO")
-
-    registrar_mensagem("Identificação e remoção de duplicatas.", nivel="SUB-ETAPA 2.1")
-    linhas_iniciais_antes_dedupe = df.shape[0]
-    df.drop_duplicates(inplace=True)
-    linhas_apos_dedupe = df.shape[0]
-    if linhas_iniciais_antes_dedupe > linhas_apos_dedupe:
-        registrar_mensagem(f"Removidas {linhas_iniciais_antes_dedupe - linhas_apos_dedupe} linhas duplicadas.", nivel="SUCCESS")
-    else:
-        registrar_mensagem("Nenhuma linha duplicada encontrada.", nivel="INFO")
-
-    registrar_mensagem("Padronização de formatos (minúsculas e remoção de espaços em branco).", nivel="SUB-ETAPA 3.1")
-    colunas_string_para_padronizar = ['job_title', 'experience_level', 'employment_type', 'company_location', 'company_size', 'company_residence', 'work_setting']
-    for col in colunas_string_para_padronizar:
-        if col in df.columns and df[col].dtype == 'object':
-            df[col] = df[col].astype(str).str.lower().str.strip()
-            registrar_mensagem(f"Coluna '{col}' padronizada.", nivel="INFO")
+            Path(arquivo_log).parent.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(arquivo_log, encoding='utf-8')
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+        except Exception as e:
+            logger.warning(f"Não foi possível criar arquivo de log {arquivo_log}: {e}")
     
-    registrar_mensagem(f"Transformação de dados concluída. DataFrame final: {df.shape[0]} linhas, {df.shape[1]} colunas.", nivel="SUCCESS")
-    return df
+    return logger
 
-def carregar_dados(df, engine, nome_tabela):
-    if df is None or engine is None:
-        registrar_mensagem("Dados ou conexão com o banco de dados inválidos para carregamento.", nivel="AVISO")
-        return False
+class ConfiguracaoETL:
+    
+    def __init__(self):
+        self.logger = configurar_logging()
+        self._carregar_credenciais_db()
+        self._configurar_parametros()
+    
+    def _carregar_credenciais_db(self) -> None:
+        try:
+            from connection import (
+                DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, DB_PORT
+            )
+            self.bd_host = DB_HOST
+            self.bd_nome = DB_NAME
+            self.bd_usuario = DB_USER
+            self.bd_senha = DB_PASSWORD
+            self.bd_porta = DB_PORT
+            self.logger.info("Credenciais do banco carregadas do módulo connection")
+            
+        except ImportError as e:
+            self.logger.warning(f"Não foi possível importar credenciais de 'connection.py': {e}")
+            self.logger.info("Usando credenciais padrão (desenvolvimento)")
+            
+            self.bd_host = os.getenv('DB_HOST', 'localhost')
+            self.bd_nome = os.getenv('DB_NAME', 'postgres')
+            self.bd_usuario = os.getenv('DB_USER', 'postgres')
+            self.bd_senha = os.getenv('DB_PASSWORD', '123')
+            self.bd_porta = os.getenv('DB_PORT', '5432')
+    
+    def _configurar_parametros(self) -> None:
+        """Configura parâmetros do ETL"""
+        self.caminho_csv = os.getenv('CAMINHO_CSV', '../desafio100dias/arquivos_diversos/ai_job_dataset.csv')
+        self.nome_tabela = os.getenv('NOME_TABELA', 'ai_jobs')
+        self.encoding_csv = os.getenv('ENCODING_CSV', 'utf-8')
 
-    registrar_mensagem(f"Iniciando carregamento de dados para a tabela '{nome_tabela}' no PostgreSQL.", nivel="INFO")
+class ExtractorCSV:
+    
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+    
+    def extrair_dados(self, caminho_csv: str, encoding: str = 'utf-8') -> Optional[pd.DataFrame]:
+
+        self.logger.info(f"Iniciando extração de dados: {caminho_csv}")
+        
+        try:
+            if not Path(caminho_csv).exists():
+                raise FileNotFoundError(f"Arquivo não encontrado: {caminho_csv}")
+            
+            encodings_tentar = [encoding, 'utf-8', 'latin1', 'cp1252']
+            
+            for enc in encodings_tentar:
+                try:
+                    df = pd.read_csv(caminho_csv, encoding=enc)
+                    self.logger.info(f"Dados extraídos com sucesso usando encoding '{enc}': "
+                                   f"{df.shape[0]} linhas, {df.shape[1]} colunas")
+                    return df
+                except UnicodeDecodeError:
+                    if enc == encodings_tentar[-1]:
+                        raise
+                    continue
+            
+        except FileNotFoundError as e:
+            self.logger.error(f"Arquivo CSV não encontrado: {e}")
+        except pd.errors.EmptyDataError:
+            self.logger.error("Arquivo CSV está vazio")
+        except pd.errors.ParserError as e:
+            self.logger.error(f"Erro ao parsear CSV: {e}")
+        except Exception as e:
+            self.logger.error(f"Erro inesperado na extração: {e}")
+        
+        return None
+
+class TransformadorDados:
+    
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+    
+    def transformar_dados(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
+
+        if df is None or df.empty:
+            self.logger.warning("DataFrame de entrada é nulo ou vazio")
+            return None
+        
+        self.logger.info("Iniciando transformação de dados")
+        
+        try:
+            df_transformado = df.copy()
+            
+            df_transformado = self._tratar_valores_nulos(df_transformado)
+            
+            df_transformado = self._remover_duplicatas(df_transformado)
+            
+            df_transformado = self._padronizar_dados(df_transformado)
+            
+            df_transformado = self._validar_dados_finais(df_transformado)
+            
+            self.logger.info(f"Transformação concluída: {df_transformado.shape[0]} linhas, "
+                           f"{df_transformado.shape[1]} colunas")
+            return df_transformado
+            
+        except Exception as e:
+            self.logger.error(f"Erro durante transformação: {e}")
+            return None
+    
+    def _tratar_valores_nulos(self, df: pd.DataFrame) -> pd.DataFrame:
+        self.logger.info("Tratando valores nulos")
+        
+        nulos_inicial = df.isnull().sum()
+        colunas_com_nulos = nulos_inicial[nulos_inicial > 0]
+        
+        if len(colunas_com_nulos) > 0:
+            self.logger.info(f"Colunas com valores nulos: {dict(colunas_com_nulos)}")
+        
+        if 'salary_in_usd' in df.columns:
+            df['salary_in_usd'] = pd.to_numeric(df['salary_in_usd'], errors='coerce')
+            if df['salary_in_usd'].isnull().any():
+                mediana = df['salary_in_usd'].median()
+                if not pd.isna(mediana):
+                    df['salary_in_usd'].fillna(mediana, inplace=True)
+                    self.logger.info(f"Valores nulos em salary_in_usd preenchidos com mediana: {mediana}")
+        
+        colunas_categoricas = ['employment_type', 'company_location', 'job_title', 
+                              'experience_level', 'company_size', 'company_residence', 
+                              'work_setting']
+        
+        for col in colunas_categoricas:
+            if col in df.columns and df[col].isnull().any():
+                try:
+                    moda = df[col].mode()[0]
+                    df[col].fillna(moda, inplace=True)
+                    self.logger.info(f"Valores nulos em {col} preenchidos com moda: {moda}")
+                except (IndexError, KeyError):
+                    self.logger.warning(f"Não foi possível calcular moda para {col}")
+        
+        linhas_antes = len(df)
+        df.dropna(inplace=True)
+        linhas_removidas = linhas_antes - len(df)
+        
+        if linhas_removidas > 0:
+            self.logger.info(f"Removidas {linhas_removidas} linhas com valores nulos restantes")
+        
+        return df
+    
+    def _remover_duplicatas(self, df: pd.DataFrame) -> pd.DataFrame:
+        self.logger.info("Removendo duplicatas")
+        
+        linhas_antes = len(df)
+        df.drop_duplicates(inplace=True)
+        duplicatas_removidas = linhas_antes - len(df)
+        
+        if duplicatas_removidas > 0:
+            self.logger.info(f"Removidas {duplicatas_removidas} linhas duplicadas")
+        else:
+            self.logger.info("Nenhuma duplicata encontrada")
+        
+        return df
+    
+    def _padronizar_dados(self, df: pd.DataFrame) -> pd.DataFrame:
+        self.logger.info("Padronizando dados")
+        
+        colunas_texto = ['job_title', 'experience_level', 'employment_type', 
+                        'company_location', 'company_size', 'company_residence', 
+                        'work_setting']
+        
+        for col in colunas_texto:
+            if col in df.columns and df[col].dtype == 'object':
+                df[col] = df[col].astype(str).str.lower().str.strip()
+                self.logger.debug(f"Coluna {col} padronizada")
+        
+        return df
+    
+    def _validar_dados_finais(self, df: pd.DataFrame) -> pd.DataFrame:
+        self.logger.info("Validando dados finais")
+        
+        nulos_finais = df.isnull().sum().sum()
+        if nulos_finais > 0:
+            self.logger.warning(f"Ainda existem {nulos_finais} valores nulos após transformação")
+        
+        if df.empty:
+            self.logger.error("DataFrame está vazio após transformações")
+            return None
+        
+        self.logger.info("Validação de dados concluída com sucesso")
+        return df
+
+class ConectorBancoDados:
+    
+    def __init__(self, config: ConfiguracaoETL):
+        self.config = config
+        self.logger = config.logger
+        self.engine = None
+    
+    def conectar(self) -> bool:
+
+        self.logger.info("Conectando ao banco de dados PostgreSQL")
+        
+        try:
+            string_conexao = (f'postgresql+psycopg2://{self.config.bd_usuario}:'
+                            f'{self.config.bd_senha}@{self.config.bd_host}:'
+                            f'{self.config.bd_porta}/{self.config.bd_nome}')
+            
+            self.engine = create_engine(string_conexao, pool_pre_ping=True)
+            
+            with self.engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            
+            self.logger.info("Conexão com banco de dados estabelecida com sucesso")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Falha na conexão com banco de dados: {e}")
+            return False
+    
+    def carregar_dados(self, df: pd.DataFrame, nome_tabela: str) -> bool:
+     
+        if df is None or df.empty:
+            self.logger.warning("DataFrame vazio, nenhum dado será carregado")
+            return False
+        
+        if self.engine is None:
+            self.logger.error("Conexão com banco não estabelecida")
+            return False
+        
+        self.logger.info(f"Carregando {len(df)} registros na tabela '{nome_tabela}'")
+        
+        try:
+            df.to_sql(nome_tabela, self.engine, if_exists='replace', index=False)
+            self.logger.info(f"Dados carregados com sucesso na tabela '{nome_tabela}'")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao carregar dados: {e}")
+            return False
+    
+    def desconectar(self) -> None:
+        if self.engine:
+            self.engine.dispose()
+            self.logger.info("Conexão com banco de dados fechada")
+
+class PipelineETL:
+    
+    def __init__(self):
+        self.config = ConfiguracaoETL()
+        self.logger = self.config.logger
+        self.extractor = ExtractorCSV(self.logger)
+        self.transformador = TransformadorDados(self.logger)
+        self.conector_bd = ConectorBancoDados(self.config)
+    
+    def executar(self) -> bool:
+
+        self.logger.info("="*60)
+        self.logger.info("INICIANDO PROCESSO ETL")
+        self.logger.info("="*60)
+        
+        sucesso = False
+        
+        try:
+            self.logger.info("ETAPA 1: EXTRAÇÃO DE DADOS")
+            df_dados = self.extractor.extrair_dados(
+                self.config.caminho_csv, 
+                self.config.encoding_csv
+            )
+            
+            if df_dados is None:
+                self.logger.error("Falha na extração de dados")
+                return False
+            
+            self.logger.info("ETAPA 2: TRANSFORMAÇÃO DE DADOS")
+            df_transformado = self.transformador.transformar_dados(df_dados)
+            
+            if df_transformado is None:
+                self.logger.error("Falha na transformação de dados")
+                return False
+            
+            self.logger.info("ETAPA 3: CARGA DE DADOS")
+            if not self.conector_bd.conectar():
+                self.logger.error("Falha na conexão com banco de dados")
+                return False
+            
+            sucesso = self.conector_bd.carregar_dados(df_transformado, self.config.nome_tabela)
+            
+        except Exception as e:
+            self.logger.error(f"Erro inesperado no pipeline ETL: {e}")
+            
+        finally:
+            self.conector_bd.desconectar()
+            
+            if sucesso:
+                self.logger.info("="*60)
+                self.logger.info("PROCESSO ETL CONCLUÍDO COM SUCESSO")
+                self.logger.info("="*60)
+            else:
+                self.logger.error("="*60)
+                self.logger.error("PROCESSO ETL FALHOU")
+                self.logger.error("="*60)
+        
+        return sucesso
+
+def main():
     try:
-        df.to_sql(nome_tabela, engine, if_exists='replace', index=False)
-        registrar_mensagem(f"Dados carregados com sucesso para a tabela '{nome_tabela}'.", nivel="SUCCESS")
-        return True
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        arquivo_log = f"logs/etl_{timestamp}.log"
+        
+        Path("logs").mkdir(exist_ok=True)
+        
+        pipeline = PipelineETL()
+        sucesso = pipeline.executar()
+        
+        sys.exit(0 if sucesso else 1)
+        
+    except KeyboardInterrupt:
+        print("\nProcesso interrompido pelo usuário")
+        sys.exit(1)
     except Exception as e:
-        registrar_mensagem(f"Falha ao carregar dados para o banco de dados: {e}", nivel="ERRO")
-        return False
+        print(f"Erro crítico: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
-    registrar_mensagem("--- INÍCIO DO PROCESSO ETL ---", nivel="INICIO")
-
-    registrar_mensagem("Extração de Dados.", nivel="INFO")
-    dataframe_dados = extrair_dados(CAMINHO_ARQUIVO_CSV)
-
-    if dataframe_dados is not None:
-        registrar_mensagem("Transformação de Dados.", nivel="INFO")
-        dataframe_dados_limpo = transformar_dados(dataframe_dados)
-
-        if dataframe_dados_limpo is not None:
-            registrar_mensagem("Carga de Dados.", nivel="INFO")
-            engine_bd = conectar_bd_alchemy()
-            if engine_bd:
-                carregar_dados(dataframe_dados_limpo, engine_bd, NOME_TABELA)
-                engine_bd.dispose()
-                registrar_mensagem("Conexões com o banco de dados liberadas.", nivel="INFO")
-            else:
-                registrar_mensagem("Conexão com o banco de dados falhou, a carga não pôde ser realizada.", nivel="ERRO")
-        else:
-            registrar_mensagem("A etapa de transformação de dados falhou ou retornou um DataFrame vazio. Carga não realizada.", nivel="ERRO")
-    else:
-        registrar_mensagem("A etapa de extração de dados falhou. Processo ETL interrompido.", nivel="ERRO")
-
-    registrar_mensagem("--- FIM DO PROCESSO ETL ---", nivel="FIM")
+    main()
